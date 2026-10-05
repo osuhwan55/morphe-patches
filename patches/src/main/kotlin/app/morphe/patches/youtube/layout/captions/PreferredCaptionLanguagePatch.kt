@@ -43,17 +43,12 @@ internal val preferredCaptionLanguagePatch = bytecodePatch(
                 addInstructions(
                     index,
                     """
-                        invoke-static { v$register }, $EXTENSION_CLASS->getPreferredCaptionTrack(Ljava/lang/Object;)Ljava/lang/Object;
+                        invoke-static { p0, v$register }, $EXTENSION_CLASS->getPreferredCaptionTrack(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;
                         move-result-object v$register
                         check-cast v$register, $returnType
                     """
                 )
             }
-
-            addInstruction(
-                0,
-                "invoke-static { p0 }, $EXTENSION_CLASS->setSubtitleManager(Ljava/lang/Object;)V"
-            )
         }
 
         SetSubtitleTrackFingerprint.method.apply {
@@ -61,7 +56,6 @@ internal val preferredCaptionLanguagePatch = bytecodePatch(
             addInstructions(
                 0,
                 """
-                    invoke-static { p0 }, $EXTENSION_CLASS->setSubtitleManager(Ljava/lang/Object;)V
                     invoke-static { p0, p1, p2 }, $EXTENSION_CLASS->onSetSubtitleTrack(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;
                     move-result-object p1
                     check-cast p1, $trackType

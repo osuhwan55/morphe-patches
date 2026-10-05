@@ -23,7 +23,6 @@ public class PreferredCaptionLanguagePatch {
     private static final String AUTO_TRANSLATE_OPTION = "AUTO_TRANSLATE_CAPTIONS_OPTION";
 
     private static final AtomicBoolean userSelectedTrack = new AtomicBoolean(false);
-    private static volatile Object currentSubtitleManager = null;
 
     // Reflection caches
     private static volatile boolean reflectionInitialized = false;
@@ -36,37 +35,18 @@ public class PreferredCaptionLanguagePatch {
     private static volatile boolean trackFieldsInitialized = false;
     private static Field trackLanguageField = null; // Field on CaptionTrack (e.g. "ko", "en")
     private static Field trackVssIdField = null;    // Field on CaptionTrack (e.g. ".ko", "a.en", "t.ko")
-    private static Field trackNameField = null;     // CharSequence / Display name field
 
     /**
-     * Entry point: Stores SubtitleManager instance safely before registers get clobbered.
-     */
-    public static void setSubtitleManager(Object sm) {
-        if (sm != null) {
-            currentSubtitleManager = sm;
-            initReflection(sm);
-        }
-    }
-
-    /**
-     * Injection point: Called right before return in SubtitleManager.b()
-     */
-    public static Object getPreferredCaptionTrack(Object originalTrack) {
-        return getPreferredCaptionTrack(currentSubtitleManager, originalTrack);
-    }
-
-    /**
-     * Overloaded injection point for backwards compatibility.
+     * Injection point: Called right before return in SubtitleManager.getDefaultCaptionTrack()
      */
     public static Object getPreferredCaptionTrack(Object subtitleManager, Object originalTrack) {
         try {
-            if (subtitleManager == null || captionTracksManagerField == null) {
-                if (currentSubtitleManager != null) {
-                    subtitleManager = currentSubtitleManager;
-                }
+            if (subtitleManager == null) {
+                return originalTrack;
             }
 
-            if (subtitleManager == null) {
+            // CC off guard: Preserve disabled caption or null track state
+            if (isDisableTrack(originalTrack)) {
                 return originalTrack;
             }
 
@@ -87,15 +67,19 @@ public class PreferredCaptionLanguagePatch {
 
             String targetLang;
             if ("default".equalsIgnoreCase(prefLang) || "app".equalsIgnoreCase(prefLang)) {
-                targetLang = Locale.getDefault().getLanguage();
+                Locale defLocale = Locale.getDefault();
+                String tag = defLocale.toLanguageTag();
+                targetLang = (tag != null && !tag.isEmpty() && !"und".equalsIgnoreCase(tag))
+                        ? tag
+                        : defLocale.getLanguage();
             } else {
                 targetLang = prefLang;
             }
 
-            if (targetLang == null || targetLang.trim().isEmpty()) {
+            targetLang = normalizeLanguageCode(targetLang);
+            if (targetLang.isEmpty()) {
                 return originalTrack;
             }
-            targetLang = targetLang.trim().toLowerCase(Locale.ROOT);
 
             initReflection(subtitleManager);
 
@@ -184,15 +168,16 @@ public class PreferredCaptionLanguagePatch {
     }
 
     /**
-     * Injection point: SubtitleManager.m(aosh, anht, int)
+     * Injection point: SubtitleManager.setSubtitleTrack(SubtitleTrack, SelectType, ...)
      * Intercepts and overrides the subtitle track with preferred language if applicable.
      */
     public static Object onSetSubtitleTrack(Object subtitleManager, Object track, Object selectType) {
         try {
-            if (subtitleManager != null) {
-                currentSubtitleManager = subtitleManager;
-                initReflection(subtitleManager);
+            if (subtitleManager == null) {
+                return track;
             }
+
+            initReflection(subtitleManager);
 
             final Object finalTrack = track;
             final Object finalSelectType = selectType;
@@ -212,13 +197,12 @@ public class PreferredCaptionLanguagePatch {
                 return track;
             }
 
-            if (track == null || isDisableTrack(track)) {
+            if (isDisableTrack(track)) {
                 Logger.printDebug(() -> "PreferredCaptionLanguagePatch: Track is disable option or null, preserving: " + finalTrack);
                 return track;
             }
 
-            Object effectiveSm = subtitleManager != null ? subtitleManager : currentSubtitleManager;
-            Object preferred = getPreferredCaptionTrack(effectiveSm, track);
+            Object preferred = getPreferredCaptionTrack(subtitleManager, track);
             if (preferred != null) {
                 Logger.printDebug(() -> "PreferredCaptionLanguagePatch: Overriding subtitle track with preferred track: " + preferred);
                 return preferred;
@@ -357,7 +341,6 @@ public class PreferredCaptionLanguagePatch {
             Class<?> clazz = track.getClass();
             Field langF = null;
             Field vssF = null;
-            Field nameF = null;
 
             // Direct check for known YouTube CaptionTrack (aosh) fields
             try {
@@ -368,11 +351,6 @@ public class PreferredCaptionLanguagePatch {
             try {
                 vssF = clazz.getDeclaredField("k");
                 vssF.setAccessible(true);
-            } catch (Throwable ignored) {}
-
-            try {
-                nameF = clazz.getDeclaredField("p");
-                nameF.setAccessible(true);
             } catch (Throwable ignored) {}
 
             if (langF == null || vssF == null) {
@@ -393,15 +371,12 @@ public class PreferredCaptionLanguagePatch {
                                 }
                             }
                         } catch (Throwable ignored) {}
-                    } else if (CharSequence.class.isAssignableFrom(type)) {
-                        nameF = f;
                     }
                 }
             }
 
             if (langF != null) trackLanguageField = langF;
             if (vssF != null) trackVssIdField = vssF;
-            if (nameF != null) trackNameField = nameF;
 
             if (trackLanguageField == null) {
                 for (Field f : clazz.getDeclaredFields()) {
@@ -471,16 +446,31 @@ public class PreferredCaptionLanguagePatch {
         return DISABLE_OPTION.equals(lang) || AUTO_TRANSLATE_OPTION.equals(lang);
     }
 
+    private static String normalizeLanguageCode(String code) {
+        if (code == null) return "";
+        String s = code.trim().toLowerCase(Locale.ROOT).replace('_', '-');
+        if (s.startsWith("iw")) s = "he" + s.substring(2);
+        else if (s.startsWith("in")) s = "id" + s.substring(2);
+        else if (s.startsWith("ji")) s = "yi" + s.substring(2);
+        return s;
+    }
+
     private static boolean matchesLanguage(String trackLang, String targetLang) {
         if (trackLang == null || targetLang == null) return false;
-        String t1 = trackLang.toLowerCase(Locale.ROOT).replace('_', '-');
-        String t2 = targetLang.toLowerCase(Locale.ROOT).replace('_', '-');
+        String t1 = normalizeLanguageCode(trackLang);
+        String t2 = normalizeLanguageCode(targetLang);
         if (t1.equals(t2)) return true;
         if (t1.startsWith(t2 + "-") || t2.startsWith(t1 + "-")) return true;
 
         // Prevent cross-matching between Simplified and Traditional Chinese
-        if ((t1.contains("hans") || t1.contains("cn")) && (t2.contains("hant") || t2.contains("tw") || t2.contains("hk"))) return false;
-        if ((t1.contains("hant") || t1.contains("tw") || t1.contains("hk")) && (t2.contains("hans") || t2.contains("cn"))) return false;
+        boolean t1Traditional = t1.contains("hant") || t1.contains("tw") || t1.contains("hk");
+        boolean t1Simplified = t1.contains("hans") || t1.contains("cn");
+        boolean t2Traditional = t2.contains("hant") || t2.contains("tw") || t2.contains("hk");
+        boolean t2Simplified = t2.contains("hans") || t2.contains("cn");
+
+        if ((t1Simplified && t2Traditional) || (t1Traditional && t2Simplified)) {
+            return false;
+        }
 
         String p1 = t1.contains("-") ? t1.substring(0, t1.indexOf('-')) : t1;
         String p2 = t2.contains("-") ? t2.substring(0, t2.indexOf('-')) : t2;
