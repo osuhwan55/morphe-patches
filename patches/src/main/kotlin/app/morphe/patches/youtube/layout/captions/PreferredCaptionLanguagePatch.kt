@@ -15,8 +15,9 @@ import app.morphe.patches.shared.misc.settings.preference.ListPreference
 import app.morphe.patches.youtube.misc.extension.sharedExtensionPatch
 import app.morphe.patches.youtube.misc.settings.settingsPatch
 import app.morphe.patches.youtube.shared.StartVideoInformerFingerprint
-import app.morphe.patches.youtube.video.information.onCreateHook
-import app.morphe.patches.youtube.video.information.videoInformationPatch
+import app.morphe.patches.youtube.video.videoid.hookBackgroundPlayVideoId
+import app.morphe.patches.youtube.video.videoid.hookVideoId
+import app.morphe.patches.youtube.video.videoid.videoIdPatch
 import app.morphe.util.findInstructionIndicesReversedOrThrow
 import com.android.tools.smali.dexlib2.Opcode
 import com.android.tools.smali.dexlib2.iface.instruction.OneRegisterInstruction
@@ -30,7 +31,7 @@ internal val preferredCaptionLanguagePatch = bytecodePatch(
     dependsOn(
         sharedExtensionPatch,
         settingsPatch,
-        videoInformationPatch
+        videoIdPatch,
     )
 
     execute {
@@ -64,7 +65,8 @@ internal val preferredCaptionLanguagePatch = bytecodePatch(
             )
         }
 
-        onCreateHook(EXTENSION_CLASS, "newVideoStarted")
+        hookVideoId("$EXTENSION_CLASS->newVideoLoaded(Ljava/lang/String;)V")
+        hookBackgroundPlayVideoId("$EXTENSION_CLASS->newVideoLoaded(Ljava/lang/String;)V")
 
         StartVideoInformerFingerprint.method.addInstruction(
             0,

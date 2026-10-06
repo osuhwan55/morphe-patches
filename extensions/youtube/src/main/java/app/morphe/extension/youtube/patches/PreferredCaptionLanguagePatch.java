@@ -24,6 +24,7 @@ public class PreferredCaptionLanguagePatch {
     private static final String DISABLE_OPTION = "DISABLE_CAPTIONS_OPTION";
     private static final String AUTO_TRANSLATE_OPTION = "AUTO_TRANSLATE_CAPTIONS_OPTION";
 
+    private static volatile String currentVideoId = null;
     private static final AtomicBoolean userSelectedTrack = new AtomicBoolean(false);
     private static final AtomicBoolean userInteractionAllowed = new AtomicBoolean(false);
     private static volatile long videoStartTime = 0;
@@ -207,6 +208,19 @@ public class PreferredCaptionLanguagePatch {
                     + ", selectType=" + finalSelectType
                     + ", interactionAllowed=" + interactionAllowed);
 
+            // CC off guard: Preserve disabled caption or null track state.
+            // MUST be checked before user selection detection so that player reset / disable
+            // tracks during video transition never lock userSelectedTrack = true.
+            if (isDisableTrack(track)) {
+                Logger.printDebug(() -> "PreferredCaptionLanguagePatch: onSetSubtitleTrack preserving disabled or null track: " + finalTrack);
+                return track;
+            }
+
+            if (userSelectedTrack.get()) {
+                Logger.printDebug(() -> "PreferredCaptionLanguagePatch: User manually selected caption track previously, preserving: " + finalTrack);
+                return track;
+            }
+
             boolean isExplicitSelect = selectType != null && "PREFERRED_TRACK".equals(selectType.toString());
 
             // Respect explicit user selection only after the initial video load window
@@ -222,16 +236,6 @@ public class PreferredCaptionLanguagePatch {
                 }
             }
 
-            if (userSelectedTrack.get()) {
-                Logger.printDebug(() -> "PreferredCaptionLanguagePatch: User manually selected caption track previously, preserving: " + finalTrack);
-                return track;
-            }
-
-            if (isDisableTrack(track)) {
-                Logger.printDebug(() -> "PreferredCaptionLanguagePatch: Track is disable option or null, preserving: " + finalTrack);
-                return track;
-            }
-
             Object preferred = getPreferredCaptionTrack(subtitleManager, track);
             if (preferred != null) {
                 Logger.printDebug(() -> "PreferredCaptionLanguagePatch: Overriding subtitle track with preferred track: " + preferred);
@@ -245,6 +249,7 @@ public class PreferredCaptionLanguagePatch {
 
     private static boolean isDisableTrack(Object track) {
         if (track == null) return true;
+        initTrackFields(track);
         String lang = getTrackLanguage(track);
         String vss = getTrackVssId(track);
         return DISABLE_OPTION.equals(lang) || "-".equals(vss) || (lang != null && lang.isEmpty());
@@ -278,7 +283,22 @@ public class PreferredCaptionLanguagePatch {
     }
 
     /**
-     * Injection point: Video start hook
+     * Injection point: Video ID change hook (called when a new video is loaded)
+     */
+    public static void newVideoLoaded(String videoId) {
+        if (videoId == null || videoId.isEmpty() || videoId.equals(currentVideoId)) {
+            return;
+        }
+        currentVideoId = videoId;
+        userInteractionAllowed.set(false);
+        userSelectedTrack.set(false);
+        recordProgrammaticSelection(null);
+        videoStartTime = System.currentTimeMillis();
+        Logger.printDebug(() -> "PreferredCaptionLanguagePatch: newVideoLoaded (" + videoId + "), reset user selection state");
+    }
+
+    /**
+     * Legacy injection point: Video start hook
      */
     public static void newVideoStarted(VideoInformation.PlaybackController ignoredController) {
         userInteractionAllowed.set(false);
@@ -292,9 +312,13 @@ public class PreferredCaptionLanguagePatch {
      * Injection point: Video information loaded hook
      */
     public static void videoInformationLoaded() {
+        final String videoIdAtLoad = currentVideoId;
         Utils.runOnMainThreadDelayed(() -> {
-            userInteractionAllowed.set(true);
-            Logger.printDebug(() -> "PreferredCaptionLanguagePatch: videoInformationLoaded, user interaction unlocked");
+            boolean isCurrent = (videoIdAtLoad == null) ? (currentVideoId == null) : videoIdAtLoad.equals(currentVideoId);
+            if (isCurrent) {
+                userInteractionAllowed.set(true);
+                Logger.printDebug(() -> "PreferredCaptionLanguagePatch: videoInformationLoaded, user interaction unlocked");
+            }
         }, 300);
     }
 
