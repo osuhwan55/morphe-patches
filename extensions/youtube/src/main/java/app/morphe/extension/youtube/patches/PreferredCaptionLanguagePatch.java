@@ -70,8 +70,8 @@ public class PreferredCaptionLanguagePatch {
                 return originalTrack;
             }
 
-            // CC off guard: Preserve disabled caption or null track state
-            if (isDisableTrack(originalTrack)) {
+            // CC off guard: Preserve explicitly disabled caption option
+            if (isExplicitlyDisabled(originalTrack)) {
                 logDecision("ORIGINAL_IS_DISABLED", source, originalTrack, originalTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
                 return originalTrack;
             }
@@ -325,11 +325,16 @@ public class PreferredCaptionLanguagePatch {
         return track;
     }
 
-    private static boolean isDisableTrack(Object track) {
-        if (track == null) return true;
+    private static boolean isExplicitlyDisabled(Object track) {
+        if (track == null) return false;
         String lang = getTrackLanguage(track);
         String vss = getTrackVssId(track);
         return DISABLE_OPTION.equals(lang) || "-".equals(vss) || (lang != null && lang.isEmpty());
+    }
+
+    private static boolean isDisableTrack(Object track) {
+        if (track == null) return true;
+        return isExplicitlyDisabled(track);
     }
 
     private static void recordProgrammaticSelection(Object track) {
@@ -464,7 +469,7 @@ public class PreferredCaptionLanguagePatch {
         for (Object item : list) {
             if (item == null) continue;
             String vss = getTrackVssId(item);
-            if (vss != null && vss.startsWith("t.")) return true;
+            if (vss != null && (vss.startsWith("t.") || vss.startsWith("ta."))) return true;
         }
         return false;
     }
@@ -505,7 +510,7 @@ public class PreferredCaptionLanguagePatch {
                         String s = (String) val;
                         if (DISABLE_OPTION.equals(s) || AUTO_TRANSLATE_OPTION.equals(s)) {
                             langF = f;
-                        } else if ("-".equals(s) || s.startsWith(".") || s.startsWith("a.") || s.startsWith("t.")) {
+                        } else if ("-".equals(s) || s.startsWith(".") || s.startsWith("a.") || s.startsWith("t.") || s.startsWith("ta.")) {
                             vssF = f;
                         }
                     }
@@ -558,7 +563,7 @@ public class PreferredCaptionLanguagePatch {
                 try {
                     f.setAccessible(true);
                     String s = (String) f.get(track);
-                    if (s != null && !s.isEmpty() && !s.startsWith(".") && !s.startsWith("a.") && !s.startsWith("t.") && !"-".equals(s) && !s.contains("&tlang=")) {
+                    if (s != null && !s.isEmpty() && !s.startsWith(".") && !s.startsWith("a.") && !s.startsWith("t.") && !s.startsWith("ta.") && !"-".equals(s) && !s.contains("&tlang=")) {
                         return s;
                     }
                 } catch (Throwable ignored) {}
@@ -580,7 +585,7 @@ public class PreferredCaptionLanguagePatch {
                 try {
                     f.setAccessible(true);
                     String s = (String) f.get(track);
-                    if (s != null && (s.startsWith(".") || s.startsWith("a.") || s.startsWith("t.") || "-".equals(s))) {
+                    if (s != null && (s.startsWith(".") || s.startsWith("a.") || s.startsWith("t.") || s.startsWith("ta.") || "-".equals(s))) {
                         return s;
                     }
                 } catch (Throwable ignored) {}
