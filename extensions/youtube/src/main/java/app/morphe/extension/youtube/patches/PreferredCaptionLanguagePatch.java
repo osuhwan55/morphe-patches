@@ -22,10 +22,10 @@ import app.morphe.extension.youtube.settings.Settings;
 
 @SuppressWarnings("unused")
 public class PreferredCaptionLanguagePatch {
-    public static final String BUILD_VERSION = "0282d5df2-diag";
+    public static final String BUILD_VERSION = "0282d5df2-caller-hook";
 
     static {
-        Logger.printDebug(() -> "PreferredCaptionLanguagePatch: [BUILD " + BUILD_VERSION + "] Class loaded. Diagnostic build with call stack logging.");
+        Logger.printDebug(() -> "PreferredCaptionLanguagePatch: [BUILD " + BUILD_VERSION + "] Class loaded. Caller hook build with source tagging.");
     }
 
     private static final String DISABLE_OPTION = "DISABLE_CAPTIONS_OPTION";
@@ -53,22 +53,26 @@ public class PreferredCaptionLanguagePatch {
     private static Field trackVideoIdField = null;    // Field on CaptionTrack (e.g. "dQw4w9WgXcQ")
 
     /**
-     * Injection point: Called right before return in SubtitleManager.getDefaultCaptionTrack()
+     * Injection point: Called right after SubtitleManager.b() at caller-site (Candidate A).
      */
     public static Object getPreferredCaptionTrack(Object subtitleManager, Object originalTrack) {
+        return getPreferredCaptionTrack(subtitleManager, originalTrack, "CALLER_HOOK");
+    }
+
+    public static Object getPreferredCaptionTrack(Object subtitleManager, Object originalTrack, String source) {
         int directCount = -1;
         int autoCount = -1;
         boolean autoTranslateAvailable = false;
         String directLangs = "[]";
         try {
             if (subtitleManager == null) {
-                logDecision("NULL_MANAGER", originalTrack, originalTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
+                logDecision("NULL_MANAGER", source, originalTrack, originalTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
                 return originalTrack;
             }
 
             // CC off guard: Preserve disabled caption or null track state
             if (isDisableTrack(originalTrack)) {
-                logDecision("ORIGINAL_IS_DISABLED", originalTrack, originalTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
+                logDecision("ORIGINAL_IS_DISABLED", source, originalTrack, originalTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
                 return originalTrack;
             }
 
@@ -76,16 +80,17 @@ public class PreferredCaptionLanguagePatch {
             final Object effectiveSm = subtitleManager;
             final Object effectiveOrig = originalTrack;
             final String effectivePrefLang = prefLang;
-            Logger.printDebug(() -> "PreferredCaptionLanguagePatch: getPreferredCaptionTrack entry, sm=" + (effectiveSm != null) + ", orig=" + effectiveOrig + ", prefLang=" + effectivePrefLang);
+            final String effectiveSource = source;
+            Logger.printDebug(() -> "PreferredCaptionLanguagePatch: getPreferredCaptionTrack entry [" + effectiveSource + "], sm=" + (effectiveSm != null) + ", orig=" + effectiveOrig + ", prefLang=" + effectivePrefLang);
 
             if (prefLang == null || "off".equalsIgnoreCase(prefLang)) {
-                logDecision("PREF_OFF", originalTrack, originalTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
+                logDecision("PREF_OFF", source, originalTrack, originalTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
                 return originalTrack;
             }
 
             if (userSelectedTrack.get()) {
                 Logger.printDebug(() -> "PreferredCaptionLanguagePatch: User manually selected caption track, preserving: " + effectiveOrig);
-                logDecision("LOCKED_USER_SELECTED", originalTrack, originalTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
+                logDecision("LOCKED_USER_SELECTED", source, originalTrack, originalTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
                 return originalTrack;
             }
 
@@ -102,20 +107,20 @@ public class PreferredCaptionLanguagePatch {
 
             targetLang = normalizeLanguageCode(targetLang);
             if (targetLang.isEmpty()) {
-                logDecision("EMPTY_TARGET_LANG", originalTrack, originalTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
+                logDecision("EMPTY_TARGET_LANG", source, originalTrack, originalTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
                 return originalTrack;
             }
 
             initReflection(subtitleManager);
 
             if (captionTracksManagerField == null) {
-                logDecision("NO_TRACKS_MANAGER_FIELD", originalTrack, originalTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
+                logDecision("NO_TRACKS_MANAGER_FIELD", source, originalTrack, originalTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
                 return originalTrack;
             }
 
             Object tracksManager = captionTracksManagerField.get(subtitleManager);
             if (tracksManager == null) {
-                logDecision("NULL_TRACKS_MANAGER", originalTrack, originalTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
+                logDecision("NULL_TRACKS_MANAGER", source, originalTrack, originalTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
                 return originalTrack;
             }
 
@@ -193,7 +198,7 @@ public class PreferredCaptionLanguagePatch {
                 final Object selectedProviderTrack = providerTrack;
                 Logger.printDebug(() -> "PreferredCaptionLanguagePatch: Selected Priority 1 (Provider subtitle): " + selectedProviderTrack);
                 recordProgrammaticSelection(providerTrack);
-                logDecision("MATCH_PRIORITY_1_PROVIDER", originalTrack, providerTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
+                logDecision("MATCH_PRIORITY_1_PROVIDER", source, originalTrack, providerTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
                 return providerTrack;
             }
 
@@ -202,7 +207,7 @@ public class PreferredCaptionLanguagePatch {
                 final Object selectedNativeAsrTrack = nativeAsrTrack;
                 Logger.printDebug(() -> "PreferredCaptionLanguagePatch: Selected Priority 1b (Native target language track): " + selectedNativeAsrTrack);
                 recordProgrammaticSelection(nativeAsrTrack);
-                logDecision("MATCH_PRIORITY_1B_NATIVE_ASR", originalTrack, nativeAsrTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
+                logDecision("MATCH_PRIORITY_1B_NATIVE_ASR", source, originalTrack, nativeAsrTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
                 return nativeAsrTrack;
             }
 
@@ -221,7 +226,7 @@ public class PreferredCaptionLanguagePatch {
                             final Object selectedAutoTrack = track;
                             Logger.printDebug(() -> "PreferredCaptionLanguagePatch: Selected Priority 2 (Auto-translated subtitle): " + selectedAutoTrack);
                             recordProgrammaticSelection(track);
-                            logDecision("MATCH_PRIORITY_2_AUTO_TRANSLATE", originalTrack, track, directCount, autoCount, autoTranslateAvailable, directLangs);
+                            logDecision("MATCH_PRIORITY_2_AUTO_TRANSLATE", source, originalTrack, track, directCount, autoCount, autoTranslateAvailable, directLangs);
                             return track;
                         }
                     }
@@ -234,11 +239,11 @@ public class PreferredCaptionLanguagePatch {
             final Object fallbackOrig = originalTrack;
             Logger.printDebug(() -> "PreferredCaptionLanguagePatch: Falling back to original track: " + fallbackOrig);
             recordProgrammaticSelection(originalTrack);
-            logDecision("FALLBACK_ORIGINAL", originalTrack, originalTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
+            logDecision("FALLBACK_ORIGINAL", source, originalTrack, originalTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
             return originalTrack;
         } catch (Throwable t) {
             Logger.printException(() -> "PreferredCaptionLanguagePatch: Error getting preferred caption track", t);
-            logDecision("EXCEPTION_FALLBACK", originalTrack, originalTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
+            logDecision("EXCEPTION_FALLBACK", source, originalTrack, originalTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
             return originalTrack;
         }
     }
@@ -309,7 +314,7 @@ public class PreferredCaptionLanguagePatch {
                 return track;
             }
 
-            Object preferred = getPreferredCaptionTrack(subtitleManager, track);
+            Object preferred = getPreferredCaptionTrack(subtitleManager, track, "SET_TRACK");
             if (preferred != null) {
                 Logger.printDebug(() -> "PreferredCaptionLanguagePatch: Overriding subtitle track with preferred track: " + preferred);
                 return preferred;
@@ -634,7 +639,7 @@ public class PreferredCaptionLanguagePatch {
         return null;
     }
 
-    private static void logDecision(String branch, Object originalTrack, Object chosenTrack,
+    private static void logDecision(String branch, String source, Object originalTrack, Object chosenTrack,
                                     int directCount, int autoCount, boolean autoTranslateAvailable,
                                     String directLangs) {
         String origLang = getTrackLanguage(originalTrack);
@@ -647,7 +652,7 @@ public class PreferredCaptionLanguagePatch {
         boolean userLocked = userSelectedTrack.get();
         boolean allowed = userInteractionAllowed.get();
         long elapsed = videoStartTime > 0 ? (System.currentTimeMillis() - videoStartTime) : -1;
-        Logger.printDebug(() -> "PreferredCaptionLanguagePatch: [DECISION] returnBranch=" + branch
+        Logger.printDebug(() -> "PreferredCaptionLanguagePatch: [DECISION source=" + source + "] returnBranch=" + branch
                 + ", origLang=" + origLang + ", origVss=" + origVss + ", origVid=" + origVid
                 + ", chosenLang=" + chosenLang + ", chosenVss=" + chosenVss + ", chosenVid=" + chosenVid
                 + ", currentVid=" + currentVid
