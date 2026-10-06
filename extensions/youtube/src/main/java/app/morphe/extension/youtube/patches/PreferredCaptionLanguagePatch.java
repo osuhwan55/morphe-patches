@@ -10,6 +10,7 @@ package app.morphe.extension.youtube.patches;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -21,6 +22,12 @@ import app.morphe.extension.youtube.settings.Settings;
 
 @SuppressWarnings("unused")
 public class PreferredCaptionLanguagePatch {
+    public static final String BUILD_VERSION = "0282d5df2-diag";
+
+    static {
+        Logger.printDebug(() -> "PreferredCaptionLanguagePatch: [BUILD " + BUILD_VERSION + "] Class loaded. Diagnostic build with call stack logging.");
+    }
+
     private static final String DISABLE_OPTION = "DISABLE_CAPTIONS_OPTION";
     private static final String AUTO_TRANSLATE_OPTION = "AUTO_TRANSLATE_CAPTIONS_OPTION";
 
@@ -42,18 +49,26 @@ public class PreferredCaptionLanguagePatch {
     private static volatile boolean trackFieldsInitialized = false;
     private static Field trackLanguageField = null; // Field on CaptionTrack (e.g. "ko", "en")
     private static Field trackVssIdField = null;    // Field on CaptionTrack (e.g. ".ko", "a.en", "t.ko")
+    private static volatile boolean trackVideoIdFieldResolved = false;
+    private static Field trackVideoIdField = null;    // Field on CaptionTrack (e.g. "dQw4w9WgXcQ")
 
     /**
      * Injection point: Called right before return in SubtitleManager.getDefaultCaptionTrack()
      */
     public static Object getPreferredCaptionTrack(Object subtitleManager, Object originalTrack) {
+        int directCount = -1;
+        int autoCount = -1;
+        boolean autoTranslateAvailable = false;
+        String directLangs = "[]";
         try {
             if (subtitleManager == null) {
+                logDecision("NULL_MANAGER", originalTrack, originalTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
                 return originalTrack;
             }
 
             // CC off guard: Preserve disabled caption or null track state
             if (isDisableTrack(originalTrack)) {
+                logDecision("ORIGINAL_IS_DISABLED", originalTrack, originalTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
                 return originalTrack;
             }
 
@@ -64,11 +79,13 @@ public class PreferredCaptionLanguagePatch {
             Logger.printDebug(() -> "PreferredCaptionLanguagePatch: getPreferredCaptionTrack entry, sm=" + (effectiveSm != null) + ", orig=" + effectiveOrig + ", prefLang=" + effectivePrefLang);
 
             if (prefLang == null || "off".equalsIgnoreCase(prefLang)) {
+                logDecision("PREF_OFF", originalTrack, originalTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
                 return originalTrack;
             }
 
             if (userSelectedTrack.get()) {
                 Logger.printDebug(() -> "PreferredCaptionLanguagePatch: User manually selected caption track, preserving: " + effectiveOrig);
+                logDecision("LOCKED_USER_SELECTED", originalTrack, originalTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
                 return originalTrack;
             }
 
@@ -85,17 +102,20 @@ public class PreferredCaptionLanguagePatch {
 
             targetLang = normalizeLanguageCode(targetLang);
             if (targetLang.isEmpty()) {
+                logDecision("EMPTY_TARGET_LANG", originalTrack, originalTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
                 return originalTrack;
             }
 
             initReflection(subtitleManager);
 
             if (captionTracksManagerField == null) {
+                logDecision("NO_TRACKS_MANAGER_FIELD", originalTrack, originalTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
                 return originalTrack;
             }
 
             Object tracksManager = captionTracksManagerField.get(subtitleManager);
             if (tracksManager == null) {
+                logDecision("NULL_TRACKS_MANAGER", originalTrack, originalTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
                 return originalTrack;
             }
 
@@ -104,17 +124,22 @@ public class PreferredCaptionLanguagePatch {
             // 1. Direct tracks (Priority 1: Provider subtitle, or Native language subtitle)
             Object providerTrack = null;
             Object nativeAsrTrack = null;
-            boolean autoTranslateAvailable = false;
 
             if (directTracksMethod != null) {
                 List<?> directTracks = (List<?>) directTracksMethod.invoke(tracksManager);
                 if (directTracks != null) {
+                    directCount = directTracks.size();
+                    List<String> dLangs = new ArrayList<>();
                     for (Object track : directTracks) {
                         if (track == null) continue;
                         initTrackFields(track);
+                        if (!trackVideoIdFieldResolved) {
+                            resolveTrackVideoIdField(track);
+                        }
 
                         String lang = getTrackLanguage(track);
                         String vssId = getTrackVssId(track);
+                        dLangs.add((lang != null ? lang : "null") + "(" + (vssId != null ? vssId : "-") + ")");
 
                         if (AUTO_TRANSLATE_OPTION.equals(lang)) {
                             autoTranslateAvailable = true;
@@ -136,6 +161,30 @@ public class PreferredCaptionLanguagePatch {
                             }
                         }
                     }
+                    directLangs = dLangs.toString();
+
+                    // Cross-verify trackVideoId across direct tracks if resolved
+                    if (trackVideoIdFieldResolved && directTracks.size() > 1) {
+                        String expectedVid = VideoInformation.getVideoId();
+                        int matchCount = 0;
+                        int mismatchCount = 0;
+                        for (Object t : directTracks) {
+                            if (t == null) continue;
+                            String tVid = getTrackVideoId(t);
+                            if (tVid != null) {
+                                if (tVid.equals(expectedVid)) {
+                                    matchCount++;
+                                } else {
+                                    mismatchCount++;
+                                }
+                            }
+                        }
+                        final int finalMatchCount = matchCount;
+                        final int finalMismatchCount = mismatchCount;
+                        Logger.printDebug(() -> "PreferredCaptionLanguagePatch: Cross-verified trackVideoId across directTracks: "
+                                + "matches=" + finalMatchCount + ", mismatches=" + finalMismatchCount
+                                + ", expectedVid=" + expectedVid);
+                    }
                 }
             }
 
@@ -144,6 +193,7 @@ public class PreferredCaptionLanguagePatch {
                 final Object selectedProviderTrack = providerTrack;
                 Logger.printDebug(() -> "PreferredCaptionLanguagePatch: Selected Priority 1 (Provider subtitle): " + selectedProviderTrack);
                 recordProgrammaticSelection(providerTrack);
+                logDecision("MATCH_PRIORITY_1_PROVIDER", originalTrack, providerTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
                 return providerTrack;
             }
 
@@ -152,6 +202,7 @@ public class PreferredCaptionLanguagePatch {
                 final Object selectedNativeAsrTrack = nativeAsrTrack;
                 Logger.printDebug(() -> "PreferredCaptionLanguagePatch: Selected Priority 1b (Native target language track): " + selectedNativeAsrTrack);
                 recordProgrammaticSelection(nativeAsrTrack);
+                logDecision("MATCH_PRIORITY_1B_NATIVE_ASR", originalTrack, nativeAsrTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
                 return nativeAsrTrack;
             }
 
@@ -160,6 +211,7 @@ public class PreferredCaptionLanguagePatch {
             if (autoTranslateAvailable && autoTranslateTracksMethod != null) {
                 List<?> autoTracks = (List<?>) autoTranslateTracksMethod.invoke(tracksManager);
                 if (autoTracks != null) {
+                    autoCount = autoTracks.size();
                     for (Object track : autoTracks) {
                         if (track == null) continue;
                         initTrackFields(track);
@@ -169,6 +221,7 @@ public class PreferredCaptionLanguagePatch {
                             final Object selectedAutoTrack = track;
                             Logger.printDebug(() -> "PreferredCaptionLanguagePatch: Selected Priority 2 (Auto-translated subtitle): " + selectedAutoTrack);
                             recordProgrammaticSelection(track);
+                            logDecision("MATCH_PRIORITY_2_AUTO_TRANSLATE", originalTrack, track, directCount, autoCount, autoTranslateAvailable, directLangs);
                             return track;
                         }
                     }
@@ -181,9 +234,11 @@ public class PreferredCaptionLanguagePatch {
             final Object fallbackOrig = originalTrack;
             Logger.printDebug(() -> "PreferredCaptionLanguagePatch: Falling back to original track: " + fallbackOrig);
             recordProgrammaticSelection(originalTrack);
+            logDecision("FALLBACK_ORIGINAL", originalTrack, originalTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
             return originalTrack;
         } catch (Throwable t) {
             Logger.printException(() -> "PreferredCaptionLanguagePatch: Error getting preferred caption track", t);
+            logDecision("EXCEPTION_FALLBACK", originalTrack, originalTrack, directCount, autoCount, autoTranslateAvailable, directLangs);
             return originalTrack;
         }
     }
@@ -194,18 +249,33 @@ public class PreferredCaptionLanguagePatch {
      */
     public static Object onSetSubtitleTrack(Object subtitleManager, Object track, Object selectType) {
         try {
+            final Object finalTrack = track;
+            final Object finalSelectType = selectType;
+            final boolean interactionAllowed = userInteractionAllowed.get();
+            final boolean isUserLocked = userSelectedTrack.get();
+            final String trackLang = getTrackLanguage(track);
+            final String trackVss = getTrackVssId(track);
+            final String trackVid = getTrackVideoId(track);
+            final String currentVid = VideoInformation.getVideoId();
+            final String selectTypeStr = selectType != null ? selectType.toString() : "null";
+            final long elapsedMs = videoStartTime > 0 ? (System.currentTimeMillis() - videoStartTime) : -1;
+            final String callStack = getTopStackTrace(10);
+
+            Logger.printDebug(() -> "PreferredCaptionLanguagePatch: [SET_TRACK] "
+                    + "trackLang=" + trackLang + ", trackVss=" + trackVss
+                    + ", trackVid=" + trackVid + ", currentVid=" + currentVid
+                    + ", selectType=" + selectTypeStr
+                    + ", elapsed=" + elapsedMs + "ms"
+                    + ", interactionAllowed=" + interactionAllowed
+                    + ", userSelectedTrack=" + isUserLocked
+                    + ", rawTrack=" + finalTrack
+                    + "\nCallStack (top 10):" + callStack);
+
             if (subtitleManager == null) {
                 return track;
             }
 
             initReflection(subtitleManager);
-
-            final Object finalTrack = track;
-            final Object finalSelectType = selectType;
-            final boolean interactionAllowed = userInteractionAllowed.get();
-            Logger.printDebug(() -> "PreferredCaptionLanguagePatch: onSetSubtitleTrack track=" + finalTrack
-                    + ", selectType=" + finalSelectType
-                    + ", interactionAllowed=" + interactionAllowed);
 
             boolean isExplicitSelect = selectType != null && "PREFERRED_TRACK".equals(selectType.toString());
 
@@ -217,6 +287,13 @@ public class PreferredCaptionLanguagePatch {
                         return track;
                     }
                     userSelectedTrack.set(true);
+                    final long lockElapsed = System.currentTimeMillis() - videoStartTime;
+                    final String lockStack = getTopStackTrace(10);
+                    Logger.printDebug(() -> "PreferredCaptionLanguagePatch: [LOCK_ENGAGED] userSelectedTrack set to TRUE! "
+                            + "reason=explicit_user_selection(PREFERRED_TRACK), elapsed=" + lockElapsed + "ms, "
+                            + "trackLang=" + trackLang + ", trackVss=" + trackVss + ", trackVid=" + trackVid
+                            + ", currentVid=" + currentVid
+                            + "\nCallStack (top 10):" + lockStack);
                     Logger.printDebug(() -> "PreferredCaptionLanguagePatch: User explicitly selected subtitle track: " + finalTrack);
                     return track;
                 }
@@ -285,16 +362,21 @@ public class PreferredCaptionLanguagePatch {
         userSelectedTrack.set(false);
         recordProgrammaticSelection(null);
         videoStartTime = System.currentTimeMillis();
-        Logger.printDebug(() -> "PreferredCaptionLanguagePatch: newVideoStarted, user interaction locked");
+        final String vid = VideoInformation.getVideoId();
+        Logger.printDebug(() -> "PreferredCaptionLanguagePatch: [BUILD " + BUILD_VERSION + "] newVideoStarted, videoId=" + vid + ", user interaction locked, startTime=" + videoStartTime);
     }
 
     /**
      * Injection point: Video information loaded hook
      */
     public static void videoInformationLoaded() {
+        final String vid = VideoInformation.getVideoId();
+        Logger.printDebug(() -> "PreferredCaptionLanguagePatch: videoInformationLoaded called, currentVid=" + vid + ", scheduling 300ms unlock");
         Utils.runOnMainThreadDelayed(() -> {
             userInteractionAllowed.set(true);
-            Logger.printDebug(() -> "PreferredCaptionLanguagePatch: videoInformationLoaded, user interaction unlocked");
+            final String delayedVid = VideoInformation.getVideoId();
+            final long elapsed = videoStartTime > 0 ? (System.currentTimeMillis() - videoStartTime) : -1;
+            Logger.printDebug(() -> "PreferredCaptionLanguagePatch: videoInformationLoaded delayed runnable executed, user interaction unlocked, currentVid=" + delayedVid + ", elapsed=" + elapsed + "ms");
         }, 300);
     }
 
@@ -500,6 +582,97 @@ public class PreferredCaptionLanguagePatch {
             }
         }
         return null;
+    }
+
+    private static synchronized void resolveTrackVideoIdField(Object track) {
+        if (trackVideoIdFieldResolved || track == null) return;
+        try {
+            initTrackFields(track);
+            String knownVideoId = VideoInformation.getVideoId();
+            if (knownVideoId == null || knownVideoId.length() != 11) {
+                return;
+            }
+
+            Class<?> clazz = track.getClass();
+            Field candidate = null;
+            for (Field f : clazz.getDeclaredFields()) {
+                if (Modifier.isStatic(f.getModifiers()) || f.getType() != String.class) continue;
+                if (f.equals(trackLanguageField) || f.equals(trackVssIdField)) continue;
+                f.setAccessible(true);
+                try {
+                    Object val = f.get(track);
+                    if (knownVideoId.equals(val)) {
+                        candidate = f;
+                        break;
+                    }
+                } catch (Throwable ignored) {}
+            }
+
+            if (candidate != null) {
+                trackVideoIdField = candidate;
+                trackVideoIdFieldResolved = true;
+                final String fieldName = candidate.getName();
+                Logger.printDebug(() -> "PreferredCaptionLanguagePatch: Resolved trackVideoIdField=" + fieldName
+                        + " via exact VideoInformation.getVideoId() match (" + knownVideoId + ")");
+            }
+        } catch (Throwable t) {
+            Logger.printException(() -> "PreferredCaptionLanguagePatch: Failed to resolve trackVideoIdField", t);
+        }
+    }
+
+    private static String getTrackVideoId(Object track) {
+        if (track == null) return null;
+        if (!trackVideoIdFieldResolved) {
+            resolveTrackVideoIdField(track);
+        }
+        if (trackVideoIdField != null) {
+            try {
+                Object val = trackVideoIdField.get(track);
+                if (val instanceof String) return (String) val;
+            } catch (Throwable ignored) {}
+        }
+        return null;
+    }
+
+    private static void logDecision(String branch, Object originalTrack, Object chosenTrack,
+                                    int directCount, int autoCount, boolean autoTranslateAvailable,
+                                    String directLangs) {
+        String origLang = getTrackLanguage(originalTrack);
+        String origVss = getTrackVssId(originalTrack);
+        String origVid = getTrackVideoId(originalTrack);
+        String chosenLang = getTrackLanguage(chosenTrack);
+        String chosenVss = getTrackVssId(chosenTrack);
+        String chosenVid = getTrackVideoId(chosenTrack);
+        String currentVid = VideoInformation.getVideoId();
+        boolean userLocked = userSelectedTrack.get();
+        boolean allowed = userInteractionAllowed.get();
+        long elapsed = videoStartTime > 0 ? (System.currentTimeMillis() - videoStartTime) : -1;
+        Logger.printDebug(() -> "PreferredCaptionLanguagePatch: [DECISION] returnBranch=" + branch
+                + ", origLang=" + origLang + ", origVss=" + origVss + ", origVid=" + origVid
+                + ", chosenLang=" + chosenLang + ", chosenVss=" + chosenVss + ", chosenVid=" + chosenVid
+                + ", currentVid=" + currentVid
+                + ", elapsed=" + elapsed + "ms"
+                + ", userSelectedTrack=" + userLocked
+                + ", interactionAllowed=" + allowed
+                + ", directCount=" + directCount
+                + ", autoCount=" + autoCount
+                + ", autoTranslateAvailable=" + autoTranslateAvailable
+                + ", directLangs=" + directLangs);
+    }
+
+    private static String getTopStackTrace(int maxFrames) {
+        StackTraceElement[] stack = new Throwable().getStackTrace();
+        StringBuilder sb = new StringBuilder();
+        int count = 0;
+        for (int i = 1; i < stack.length && count < maxFrames; i++) {
+            StackTraceElement el = stack[i];
+            sb.append("\n\t-> ").append(el.getClassName())
+                    .append(".").append(el.getMethodName())
+                    .append("(").append(el.getFileName())
+                    .append(":").append(el.getLineNumber()).append(")");
+            count++;
+        }
+        return sb.toString();
     }
 
     private static boolean isPseudoOption(String lang) {
